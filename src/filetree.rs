@@ -6,18 +6,20 @@
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use anyhow::{bail, Context, Result};
+use camino::Utf8Path;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use openat_ext::OpenatDirExt;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use openssl::hash::{Hasher, MessageDigest};
+use rustix::fd::BorrowedFd;
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use std::os::unix::io::AsRawFd;
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use std::path::Path;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 
 /// The prefix we apply to our temporary files.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -272,7 +274,6 @@ pub(crate) struct ApplyUpdateOptions {
 // Let's just fork off a helper process for now.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub(crate) fn syncfs(d: &openat::Dir) -> Result<()> {
-    use rustix::fd::BorrowedFd;
     use rustix::fs::{Mode, OFlags};
     let d = unsafe { BorrowedFd::borrow_raw(d.as_raw_fd()) };
     let oflags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY;
@@ -280,12 +281,34 @@ pub(crate) fn syncfs(d: &openat::Dir) -> Result<()> {
     rustix::fs::syncfs(d).map_err(Into::into)
 }
 
+/// Copy from src to dst at root dir
+fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
+    let rootfd = unsafe { BorrowedFd::borrow_raw(root.as_raw_fd()) };
+    let r = unsafe {
+        Command::new("cp")
+            .args(["-a"])
+            .arg(src)
+            .arg(dst)
+            .pre_exec(move || rustix::process::fchdir(rootfd).map_err(Into::into))
+            .status()?
+    };
+    if !r.success() {
+        anyhow::bail!("Failed to copy");
+    }
+    Ok(())
+}
+
+/// Get first sub dir, "fedora/foo/bar" -> ("fedora", "fedora.tmp")
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn tmpname_for_path<P: AsRef<Path>>(path: P) -> std::path::PathBuf {
-    let path = path.as_ref();
-    let mut buf = path.file_name().expect("filename").to_os_string();
-    buf.push(TMP_PREFIX);
-    path.with_file_name(buf)
+fn get_subdir(path: &Utf8Path) -> Result<(String, String)> {
+    if let Some(p) = path.parent().filter(|&v| !v.as_os_str().is_empty()) {
+        let parent = p.iter().next().unwrap().to_owned();
+        let mut parent_tmp = parent.clone();
+        parent_tmp.push_str(".tmp");
+        Ok((parent, parent_tmp))
+    } else {
+        anyhow::bail!("Failed to get parent");
+    }
 }
 
 /// Given two directories, apply a diff generated from srcdir to destdir
@@ -302,34 +325,57 @@ pub(crate) fn apply_diff(
     let opts = opts.unwrap_or(&default_opts);
     cleanup_tmp(destdir).context("cleaning up temporary files")?;
 
-    // Write new and changed files
-    for pathstr in diff.additions.iter().chain(diff.changes.iter()) {
-        let path = Path::new(pathstr);
-        if let Some(parent) = path.parent() {
-            destdir.ensure_dir_all(parent, DEFAULT_FILE_MODE)?;
+    let mut updates = HashMap::new();
+    // Handle removals in temp dir
+    if !opts.skip_removals {
+        for pathstr in diff.removals.iter() {
+            let path = Utf8Path::new(pathstr);
+            let (subdir, subdir_tmp) = get_subdir(path)?;
+            if !destdir.exists(&subdir_tmp)? {
+                copy_dir(destdir, &subdir, &subdir_tmp)?;
+                updates.insert(subdir.clone(), subdir_tmp.clone());
+            }
+            let path_tmp = Utf8Path::new(&subdir_tmp).join(path.strip_prefix(&subdir)?);
+            destdir
+                .remove_file_optional(path_tmp.as_std_path())
+                .with_context(|| format!("removing {:?}", path_tmp))?;
         }
-        let destp = tmpname_for_path(path);
-        srcdir
-            .copy_file_at(path, destdir, destp.as_path())
-            .with_context(|| format!("writing {}", &pathstr))?;
     }
     // Ensure all of the new files are written persistently to disk
     if !opts.skip_sync {
         syncfs(destdir)?;
     }
-    // Now move them all into place (TODO track interruption)
-    for path in diff.additions.iter().chain(diff.changes.iter()) {
-        let pathtmp = tmpname_for_path(path);
-        destdir
-            .local_rename(&pathtmp, path)
-            .with_context(|| format!("renaming {path}"))?;
-    }
-    if !opts.skip_removals {
-        for path in diff.removals.iter() {
-            destdir
-                .remove_file_optional(path)
-                .with_context(|| format!("removing {path}"))?;
+
+    // Write new and changed files
+    for pathstr in diff.additions.iter().chain(diff.changes.iter()) {
+        let path = Utf8Path::new(pathstr);
+        let (subdir, subdir_tmp) = get_subdir(path)?;
+        if !destdir.exists(&subdir_tmp)? {
+            copy_dir(destdir, &subdir, &subdir_tmp)?;
+            updates.insert(subdir.clone(), subdir_tmp.clone());
         }
+        let path_tmp = Utf8Path::new(&subdir_tmp).join(path.strip_prefix(&subdir)?);
+        if let Some(parent) = path_tmp.parent() {
+            destdir.ensure_dir_all(parent.as_std_path(), DEFAULT_FILE_MODE)?;
+        }
+        // remove existing file for changes, then copy
+        destdir
+            .remove_file_optional(path_tmp.as_std_path())
+            .with_context(|| format!("removing {path_tmp}"))?;
+        srcdir
+            .copy_file_at(path.as_std_path(), destdir, path_tmp.as_std_path())
+            .with_context(|| format!("copying {:?} to {:?}", path, path_tmp))?;
+    }
+
+    // do local exchange
+    for (src, tmp) in updates {
+        log::trace!("doing local exchange for {} and {}", tmp, src);
+        destdir
+            .local_exchange(&tmp, &src)
+            .with_context(|| format!("exchange for {:?} and {:?}", tmp, src))?;
+        // finally remove the temp dir
+        log::trace!("cleanup: {:?}", tmp);
+        destdir.remove_all(&tmp).context("clean up temp")?;
     }
     // A second full filesystem sync to narrow any races rather than
     // waiting for writeback to kick in.
@@ -345,6 +391,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::path::Path;
 
     fn run_diff(a: &openat::Dir, b: &openat::Dir) -> Result<FileTreeDiff> {
         let ta = FileTree::new_from_dir(a)?;
