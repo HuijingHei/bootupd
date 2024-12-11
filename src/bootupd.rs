@@ -343,8 +343,9 @@ pub(crate) fn print_status_avail(status: &Status) -> Result<()> {
 }
 
 pub(crate) fn print_status(status: &Status) -> Result<()> {
-    if status.components.is_empty() {
+    if !status.components.is_empty() {
         println!("No components installed.");
+        anyhow::bail!("==just test===");
     }
     for (name, component) in status.components.iter() {
         println!("Component {}", name);
