@@ -44,6 +44,9 @@ use clap::crate_name;
 
 /// Binary entrypoint, for both daemon and client logic.
 fn main() {
+    if std::env::var_os("RUST_BACKTRACE").map_or(false, |x| &x != "0") {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
     let _scenario = fail::FailScenario::setup();
     let exit_code = run_cli();
     std::process::exit(exit_code);
