@@ -642,20 +642,24 @@ mod tests {
         let b = openat::Dir::open(&pb)?;
         a.create_dir("foo", 0o755)?;
         a.create_dir("bar", 0o755)?;
+        a.create_dir("another_foo", 0o755)?;
         let foo = Path::new("foo/bar");
         let bar = Path::new("bar/foo");
+        let another_foo = Path::new("another_foo/bar");
         let testfile = "testfile";
         {
             let mut buf = a.write_file(foo, 0o644)?;
             buf.write_all("foocontents".as_bytes())?;
             let mut buf = a.write_file(bar, 0o644)?;
             buf.write_all("barcontents".as_bytes())?;
+            let mut buf = a.write_file(another_foo, 0o644)?;
+            buf.write_all("anotherfoocontents".as_bytes())?;
             let mut buf = a.write_file(testfile, 0o644)?;
             buf.write_all("testfilecontents".as_bytes())?;
         }
 
         let diff = run_diff(&a, &b)?;
-        assert_eq!(diff.count(), 3);
+        assert_eq!(diff.count(), 4);
         b.create_dir("foo", 0o755)?;
         {
             let mut buf = b.write_file(foo, 0o644)?;
@@ -665,7 +669,7 @@ mod tests {
 
         {
             let diff = run_diff(&b, &a)?;
-            assert_eq!(diff.count(), 2);
+            assert_eq!(diff.count(), 3);
             apply_diff(&a, &b, &diff, None).context("test additional files")?;
             assert_eq!(
                 String::from_utf8(std::fs::read(pb.join(testfile))?)?,
@@ -674,6 +678,10 @@ mod tests {
             assert_eq!(
                 String::from_utf8(std::fs::read(pb.join(bar))?)?,
                 "barcontents"
+            );
+            assert_eq!(
+                String::from_utf8(std::fs::read(pb.join(another_foo))?)?,
+                "anotherfoocontents"
             );
             // creation time is not changed for unchanged file
             let b_btime_foo_new = fs::metadata(pb.join(foo))?.created()?;
@@ -699,13 +707,24 @@ mod tests {
             let ta = FileTree::new_from_dir(&a)?;
             let diff = ta.relative_diff_to(&b)?;
             assert_eq!(diff.removals.len(), 1);
-            apply_diff(&a, &b, &diff, None).context("test removed files with relative_diff")?;
+            apply_diff(&a, &b, &diff, None).context("test removed files (with relative_diff)")?;
             assert_eq!(b.exists(testfile)?, false);
+        }
+        {
+            b.remove_file(another_foo)?;
+            b.remove_dir("another_foo")?;
+            let ta = FileTree::new_from_dir(&a)?;
+            let diff = ta.relative_diff_to(&b)?;
+            assert_eq!(diff.removals.len(), 2);
+            // with relative_diff_to(), will skip copying if the dir doest not exist in dest
+            apply_diff(&a, &b, &diff, None)
+                .context("test none existing dest dirs (with relative_diff)")?;
+            assert_eq!(b.exists(another_foo)?, false);
         }
         {
             a.remove_file(bar)?;
             let diff = run_diff(&b, &a)?;
-            assert_eq!(diff.count(), 2);
+            assert_eq!(diff.count(), 3);
             apply_diff(&a, &b, &diff, None).context("test removed files")?;
             assert_eq!(b.exists(testfile)?, true);
             assert_eq!(b.exists(bar)?, false);
