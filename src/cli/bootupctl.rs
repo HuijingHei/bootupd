@@ -1,8 +1,9 @@
 use crate::bootupd;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use log::LevelFilter;
 
+use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
@@ -129,13 +130,27 @@ impl CtlCommand {
     /// Runner for `update` verb.
     fn run_update() -> Result<()> {
         ensure_running_in_systemd()?;
-        bootupd::client_run_update()
+        let sysroot = openat::Dir::open("/").context("Opening root dir")?;
+        let dest_fd = format!("/proc/self/fd/{}", sysroot.as_raw_fd());
+        let dest_root = std::fs::read_link(dest_fd)?;
+
+        let devices = crate::blockdev::get_devices(&dest_root)
+            .with_context(|| "while looking for parent devices")?;
+        crate::blockdev::init_global_devices(devices);
+        bootupd::client_run_update(&sysroot)
     }
 
     /// Runner for `update` verb.
     fn run_adopt_and_update() -> Result<()> {
         ensure_running_in_systemd()?;
-        bootupd::client_run_adopt_and_update()
+        let sysroot = openat::Dir::open("/").context("Opening root dir")?;
+        let dest_fd = format!("/proc/self/fd/{}", sysroot.as_raw_fd());
+        let dest_root = std::fs::read_link(dest_fd)?;
+
+        let devices = crate::blockdev::get_devices(&dest_root)
+            .with_context(|| "while looking for parent devices")?;
+        crate::blockdev::init_global_devices(devices);
+        bootupd::client_run_adopt_and_update(&sysroot)
     }
 
     /// Runner for `validate` verb.

@@ -1,9 +1,22 @@
 use camino::Utf8Path;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
 use bootc_blockdev::PartitionTable;
 use fn_error_context::context;
+
+static PARENT_DEVICES: OnceLock<Vec<String>> = OnceLock::new();
+
+// Initialize once
+pub fn init_parent_devices(strings: Vec<String>) {
+    PARENT_DEVICES.set(strings).expect("Already initialized");
+}
+
+// Read many times (lock-free)
+pub fn get_parent_devices() -> &'static [String] {
+    PARENT_DEVICES.get().expect("Not initialized")
+}
 
 #[context("get parent devices from mount point boot")]
 pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
@@ -23,8 +36,9 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
 }
 
 // Get single device for the target root
-pub fn get_single_device<P: AsRef<Path>>(target_root: P) -> Result<String> {
-    let mut devices = get_devices(&target_root)?.into_iter();
+pub fn get_single_device() -> Result<String> {
+    // let mut devices = get_devices(&target_root)?.into_iter();
+    let mut devices = get_global_devices().into_iter();
     let Some(parent) = devices.next() else {
         anyhow::bail!("Failed to find parent device");
     };
@@ -32,7 +46,7 @@ pub fn get_single_device<P: AsRef<Path>>(target_root: P) -> Result<String> {
     if let Some(next) = devices.next() {
         anyhow::bail!("Found multiple parent devices {parent} and {next}; not currently supported");
     }
-    Ok(parent)
+    Ok(parent.to_string())
 }
 
 /// Find esp partition on the same device
@@ -53,9 +67,9 @@ pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
 
 /// Find all ESP partitions on the devices with mountpoint boot
 #[allow(dead_code)]
-pub fn find_colocated_esps<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
+pub fn find_colocated_esps() -> Result<Vec<String>> {
     // first, get the parent device
-    let devices = get_devices(&target_root).with_context(|| "while looking for colocated ESPs")?;
+    let devices = get_global_devices();
 
     // now, look for all ESPs on those devices
     let mut esps = Vec::new();
@@ -84,10 +98,9 @@ pub fn get_bios_boot_partition(device: &str) -> Result<Option<String>> {
 
 /// Find all bios_boot partitions on the devices with mountpoint boot
 #[allow(dead_code)]
-pub fn find_colocated_bios_boot<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
+pub fn find_colocated_bios_boot() -> Result<Vec<String>> {
     // first, get the parent device
-    let devices =
-        get_devices(&target_root).with_context(|| "looking for colocated bios_boot parts")?;
+    let devices = get_global_devices();
 
     // now, look for all bios_boot parts on those devices
     let mut bios_boots = Vec::new();

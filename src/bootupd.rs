@@ -215,7 +215,7 @@ fn ensure_writable_boot() -> Result<()> {
 }
 
 /// daemon implementation of component update
-pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
+pub(crate) fn update(name: &str, sysroot: &openat::Dir) -> Result<ComponentUpdateResult> {
     let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     let inst = if let Some(inst) = state.installed.get(name) {
@@ -223,8 +223,8 @@ pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
     } else {
         anyhow::bail!("Component {} is not installed", name);
     };
-    let sysroot = openat::Dir::open("/")?;
-    let update = component.query_update(&sysroot)?;
+
+    let update = component.query_update(sysroot)?;
     let update = match update.as_ref() {
         Some(p) if inst.meta.can_upgrade_to(p) => p,
         _ => return Ok(ComponentUpdateResult::AtLatestVersion),
@@ -235,6 +235,7 @@ pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
     let mut pending_container = state.pending.take().unwrap_or_default();
     let interrupted = pending_container.get(component.name()).cloned();
     pending_container.insert(component.name().into(), update.clone());
+    let sysroot = sysroot.try_clone()?;
     let mut state_guard =
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
     state_guard
@@ -256,8 +257,7 @@ pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
 }
 
 /// daemon implementation of component adoption
-pub(crate) fn adopt_and_update(name: &str) -> Result<ContentMetadata> {
-    let sysroot = openat::Dir::open("/")?;
+pub(crate) fn adopt_and_update(name: &str, sysroot: &openat::Dir) -> Result<ContentMetadata> {
     let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     if state.installed.contains_key(name) {
@@ -269,6 +269,7 @@ pub(crate) fn adopt_and_update(name: &str) -> Result<ContentMetadata> {
     let Some(update) = component.query_update(&sysroot)? else {
         anyhow::bail!("Component {} has no available update", name);
     };
+    let sysroot = sysroot.try_clone()?;
     let mut state_guard =
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
 
@@ -408,7 +409,7 @@ pub(crate) fn print_status(status: &Status) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn client_run_update() -> Result<()> {
+pub(crate) fn client_run_update(sysroot: &openat::Dir) -> Result<()> {
     crate::try_fail_point!("update");
     let status: Status = status()?;
     if status.components.is_empty() && status.adoptable.is_empty() {
@@ -421,7 +422,7 @@ pub(crate) fn client_run_update() -> Result<()> {
             ComponentUpdatable::Upgradable => {}
             _ => continue,
         };
-        match update(name)? {
+        match update(name, sysroot)? {
             ComponentUpdateResult::AtLatestVersion => {
                 // Shouldn't happen unless we raced with another client
                 eprintln!(
@@ -449,7 +450,7 @@ pub(crate) fn client_run_update() -> Result<()> {
     }
     for (name, adoptable) in status.adoptable.iter() {
         if adoptable.confident {
-            let r: ContentMetadata = adopt_and_update(name)?;
+            let r: ContentMetadata = adopt_and_update(name, sysroot)?;
             println!("Adopted and updated: {}: {}", name, r.version);
             updated = true;
         } else {
@@ -462,13 +463,13 @@ pub(crate) fn client_run_update() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn client_run_adopt_and_update() -> Result<()> {
+pub(crate) fn client_run_adopt_and_update(sysroot: &openat::Dir) -> Result<()> {
     let status: Status = status()?;
     if status.adoptable.is_empty() {
         println!("No components are adoptable.");
     } else {
         for (name, _) in status.adoptable.iter() {
-            let r: ContentMetadata = adopt_and_update(name)?;
+            let r: ContentMetadata = adopt_and_update(name, sysroot)?;
             println!("Adopted and updated: {}: {}", name, r.version);
         }
     }
@@ -656,7 +657,8 @@ mod tests {
     fn test_failpoint_update() {
         let guard = fail::FailScenario::setup();
         fail::cfg("update", "return").unwrap();
-        let r = client_run_update();
+        let sysroot = openat::Dir::open("/").expect("open /");
+        let r = client_run_update(&sysroot);
         assert_eq!(r.is_err(), true);
         guard.teardown();
     }
