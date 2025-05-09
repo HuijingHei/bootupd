@@ -1,5 +1,5 @@
 use crate::bootupd;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use log::LevelFilter;
 
@@ -129,13 +129,15 @@ impl CtlCommand {
     /// Runner for `update` verb.
     fn run_update() -> Result<()> {
         ensure_running_in_systemd()?;
-        bootupd::client_run_update()
+        let sysroot = prep_before_update()?;
+        bootupd::client_run_update(&sysroot)
     }
 
     /// Runner for `update` verb.
     fn run_adopt_and_update() -> Result<()> {
         ensure_running_in_systemd()?;
-        bootupd::client_run_adopt_and_update()
+        let sysroot = prep_before_update()?;
+        bootupd::client_run_adopt_and_update(&sysroot)
     }
 
     /// Runner for `validate` verb.
@@ -212,4 +214,15 @@ fn run_status_in_container(json_format: bool) -> Result<()> {
         println!("Available components: {}", avail.join(" "));
     }
     Ok(())
+}
+
+/// Initialize parent devices to prepare the update
+fn prep_before_update() -> Result<openat::Dir> {
+    let sysroot = openat::Dir::open("/").context("Opening root dir")?;
+    let devices = crate::blockdev::get_devices("/").context("get parent devices")?;
+    // initialize parent devices before update
+    crate::blockdev::get_parent_devices(Some(devices));
+    // check if we can get value
+    crate::blockdev::get_parent_devices(None);
+    Ok(sysroot)
 }

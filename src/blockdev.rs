@@ -1,9 +1,16 @@
 use camino::Utf8Path;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
 use bootc_blockdev::PartitionTable;
 use fn_error_context::context;
+
+/// Get parent devices and save
+pub fn get_parent_devices(devices: Option<Vec<String>>) -> &'static [String] {
+    static PARENT_DEVICES: OnceLock<Vec<String>> = OnceLock::new();
+    PARENT_DEVICES.get_or_init(|| devices.unwrap())
+}
 
 #[context("get parent devices from mount point boot")]
 pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
