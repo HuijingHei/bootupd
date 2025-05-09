@@ -98,7 +98,7 @@ impl Bios {
 
     // check bios_boot partition on gpt type disk
     fn get_bios_boot_partition(&self) -> Option<String> {
-        match blockdev::get_single_device("/") {
+        match blockdev::get_single_device() {
             Ok(device) => {
                 let bios_boot_part =
                     blockdev::get_bios_boot_partition(&device).expect("get bios_boot part");
@@ -162,7 +162,7 @@ impl Component for Bios {
         };
 
         let target_root = "/";
-        let device = blockdev::get_single_device(&target_root)?;
+        let device = blockdev::get_single_device()?;
         self.run_grub_install(target_root, &device)?;
         log::debug!("Install grub modules on {device}");
         Ok(InstalledContent {
@@ -180,7 +180,7 @@ impl Component for Bios {
         let updatemeta = self.query_update(sysroot)?.expect("update available");
         let dest_fd = format!("/proc/self/fd/{}", sysroot.as_raw_fd());
         let dest_root = std::fs::read_link(dest_fd)?;
-        let device = blockdev::get_single_device(&dest_root)?;
+        let device = blockdev::get_single_device()?;
 
         let dest_root = dest_root.to_string_lossy().into_owned();
         self.run_grub_install(&dest_root, &device)?;
