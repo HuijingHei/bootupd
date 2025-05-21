@@ -128,7 +128,7 @@ impl Efi {
         } else {
             self.mount_esp_device(root, esp_device)?
         };
-        Ok(destdir)
+        Ok(destdir.join("EFI"))
     }
 
     fn unmount(&self) -> Result<()> {
@@ -280,7 +280,7 @@ impl Component for Efi {
         }
         let destpath = &self.ensure_mounted_esp(sysroot.path.as_ref(), Path::new(&esp))?;
 
-        let destdir = &openat::Dir::open(&destpath.join("EFI"))
+        let destdir = &openat::Dir::open(destpath)
             .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
         validate_esp(&destdir)?;
         let updated = sysroot
@@ -313,13 +313,19 @@ impl Component for Efi {
         log::debug!("Found metadata {}", meta.version);
         let srcdir_name = component_updatedirname(self);
         let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
-        // get esp device via /dev/disk/by-partlabel
-        let esp_device = self
-            .get_esp_device()
-            .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
-        let destpath = &self.ensure_mounted_esp(Path::new(dest_root), &esp_device)?;
 
-        let destd = &openat::Dir::open(destpath)
+        // Reusing mounted esp
+        let destpath = if let Some(destdir) = self.get_mounted_esp(Path::new(dest_root))? {
+            destdir
+        } else {
+            // get esp device via /dev/disk/by-partlabel
+            let esp_device = self
+                .get_esp_device()
+                .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+            self.mount_esp_device(Path::new(dest_root), &esp_device)?
+        };
+
+        let destd = &openat::Dir::open(&destpath)
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp(destd)?;
 
@@ -375,7 +381,7 @@ impl Component for Efi {
         }
         let destpath = &self.ensure_mounted_esp(sysroot.path.as_ref(), Path::new(&esp))?;
 
-        let destdir = &openat::Dir::open(&destpath.join("EFI"))
+        let destdir = &openat::Dir::open(destpath)
             .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
         validate_esp(&destdir)?;
         log::trace!("applying diff: {}", &diff);
@@ -453,7 +459,7 @@ impl Component for Efi {
         }
         let destpath = &self.ensure_mounted_esp(Path::new("/"), Path::new(&esp))?;
 
-        let efidir = &openat::Dir::open(&destpath.join("EFI"))
+        let efidir = &openat::Dir::open(destpath)
             .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
 
         let diff = currentf.relative_diff_to(&efidir)?;
