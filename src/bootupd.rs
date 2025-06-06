@@ -103,13 +103,8 @@ pub(crate) fn install(
 
     match configs.enabled_with_uuid() {
         Some(uuid) => {
-            let self_bin_meta =
-                std::fs::metadata("/proc/self/exe").context("Querying self meta")?;
-            let self_meta = ContentMetadata {
-                timestamp: self_bin_meta.modified()?.into(),
-                version: crate_version!().into(),
-            };
-            state.static_configs = Some(self_meta);
+            let meta = get_static_config_meta()?;
+            state.static_configs = Some(meta);
             #[cfg(any(
                 target_arch = "x86_64",
                 target_arch = "aarch64",
@@ -131,6 +126,16 @@ pub(crate) fn install(
         .context("failed to update state")?;
 
     Ok(())
+}
+
+#[context("Get static config metadata")]
+fn get_static_config_meta() -> Result<ContentMetadata> {
+    let self_bin_meta = std::fs::metadata("/proc/self/exe").context("Querying self meta")?;
+    let self_meta = ContentMetadata {
+        timestamp: self_bin_meta.modified()?.into(),
+        version: crate_version!().into(),
+    };
+    Ok(self_meta)
 }
 
 type Components = BTreeMap<&'static str, Box<dyn Component>>;
