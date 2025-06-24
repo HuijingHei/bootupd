@@ -115,10 +115,12 @@ impl Efi {
             return Ok(mountpoint.to_owned());
         }
         let destdir = if let Some(destdir) = self.get_mounted_esp(Path::new(root))? {
+            println!("===mounted destdir={}", destdir.display());
             destdir
         } else {
             self.mount_esp_device(root, esp_device)?
         };
+        println!("===mount esp device with destdir={}", destdir.display());
         Ok(destdir)
     }
 
@@ -347,8 +349,10 @@ impl Component for Efi {
 
         // Using `blockdev` to find the partition instead of partlabel because
         // we know the target install toplevel device already.
+        println!("====device={device}");
         let esp_device = blockdev::get_esp_partition(device)?
             .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+        println!("====esp_device={esp_device}");
 
         let destpath = &self.ensure_mounted_esp(Path::new(dest_root), Path::new(&esp_device))?;
 
