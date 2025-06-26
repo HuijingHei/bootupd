@@ -20,9 +20,10 @@ use walkdir::WalkDir;
 use widestring::U16CString;
 
 use crate::filetree;
+use crate::grubconfigs;
 use crate::model::*;
 use crate::ostreeutil;
-use crate::util::{self, CommandRunExt};
+use crate::util::*;
 use crate::{component::*, packagesystem};
 
 /// Well-known paths to the ESP that may have been mounted external to us.
@@ -108,7 +109,7 @@ impl Efi {
             if st.f_type != libc::MSDOS_SUPER_MAGIC {
                 continue;
             }
-            util::ensure_writable_mount(&mnt)?;
+            ensure_writable_mount(&mnt)?;
             log::debug!("Reusing existing {mnt:?}");
             return Ok(mnt);
         }
@@ -257,11 +258,41 @@ impl Component for Efi {
         crate::component::query_adopt_state()
     }
 
+    // Backup "/boot/efi/EFI/{vendor}/grub.cfg" to "/boot/efi/EFI/{vendor}/grub.cfg.bak"
+    // Replace "/boot/efi/EFI/{vendor}/grub.cfg" with new static "grub.cfg"
+    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
+        let sysroot =
+            openat::Dir::open(sysroot_path).with_context(|| format!("Opening {sysroot_path}"))?;
+        let Some(vendor) = self.get_efi_vendor(&sysroot)? else {
+            anyhow::bail!("Failed to find efi vendor");
+        };
+
+        // destdir is /boot/efi/EFI
+        let efidir = destdir
+            .sub_dir(&vendor)
+            .with_context(|| format!("Opening EFI/{}", vendor))?;
+
+        if !efidir.exists(grubconfigs::GRUBCONFIG_BACKUP)? {
+            println!("Creating a backup of the current GRUB config on EFI");
+            efidir
+                .copy_file(grubconfigs::GRUBCONFIG, grubconfigs::GRUBCONFIG_BACKUP)
+                .context("Failed to backup GRUB config")?;
+        }
+
+        grubconfigs::install(&sysroot, Some(&vendor), true)?;
+        // Synchronize the filesystem containing /boot/efi/EFI/{vendor} to disk.
+        // (ignore failures)
+        let _ = efidir.syncfs();
+
+        Ok(())
+    }
+
     /// Given an adoptable system and an update, perform the update.
     fn adopt_update(
         &self,
         sysroot: &openat::Dir,
         updatemeta: &ContentMetadata,
+        with_static_config: bool,
     ) -> Result<InstalledContent> {
         let Some(meta) = self.query_adopt()? else {
             anyhow::bail!("Failed to find adoptable system")
@@ -277,6 +308,20 @@ impl Component for Efi {
         let diff = updatef.relative_diff_to(&esp)?;
         log::trace!("applying adoption diff: {}", &diff);
         filetree::apply_diff(&updated, &esp, &diff, None).context("applying filesystem changes")?;
+
+        // Backup current config and install static config
+        if with_static_config {
+            // Install the static config if the OSTree bootloader is not set.
+            if let Some(bootloader) = crate::ostreeutil::get_ostree_bootloader()? {
+                println!(
+                    "ostree repo 'sysroot.bootloader' config option is currently set to: '{bootloader}'",
+                );
+            } else {
+                println!("ostree repo 'sysroot.bootloader' config option is not set yet");
+                self.migrate_static_grub_config("/", &esp)?;
+            };
+        }
+
         Ok(InstalledContent {
             meta: updatemeta.clone(),
             filetree: Some(updatef),

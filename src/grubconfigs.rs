@@ -9,6 +9,9 @@ use openat_ext::OpenatDirExt;
 const GRUB2DIR: &str = "grub2";
 const CONFIGDIR: &str = "/usr/lib/bootupd/grub2-static";
 const DROPINDIR: &str = "configs.d";
+// The related grub files
+pub(crate) const GRUBCONFIG: &str = "grub.cfg";
+pub(crate) const GRUBCONFIG_BACKUP: &str = "grub.cfg.backup";
 
 /// Install the static GRUB config files.
 #[context("Installing static GRUB configs")]
@@ -100,6 +103,8 @@ pub(crate) fn install(
                     .copy_file_at(uuid_path, &efidir, target)
                     .context("Writing bootuuid.cfg to efi dir")?;
             }
+        } else {
+            println!("Could not find /boot/efi/EFI when installing {target:?}");
         }
     }
 

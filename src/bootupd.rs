@@ -256,7 +256,7 @@ pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
 }
 
 /// daemon implementation of component adoption
-pub(crate) fn adopt_and_update(name: &str) -> Result<ContentMetadata> {
+pub(crate) fn adopt_and_update(name: &str, with_static_config: bool) -> Result<ContentMetadata> {
     let sysroot = openat::Dir::open("/")?;
     let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
     let component = component::new_from_name(name)?;
@@ -273,10 +273,19 @@ pub(crate) fn adopt_and_update(name: &str) -> Result<ContentMetadata> {
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
 
     let inst = component
-        .adopt_update(&state_guard.sysroot, &update)
+        .adopt_update(&state_guard.sysroot, &update, with_static_config)
         .context("Failed adopt and update")?;
     state.installed.insert(component.name().into(), inst);
 
+    // Set static_configs metadata and save
+    if with_static_config && state.static_configs.is_none() {
+        let meta = get_static_config_meta()?;
+        state.static_configs = Some(meta);
+        // Set bootloader to none
+        crate::ostreeutil::set_ostree_bootloader("none")?;
+
+        println!("Static GRUB configuration has been adopted successfully.");
+    }
     state_guard.update_state(&state)?;
     Ok(update)
 }
@@ -445,7 +454,7 @@ pub(crate) fn client_run_update() -> Result<()> {
     }
     for (name, adoptable) in status.adoptable.iter() {
         if adoptable.confident {
-            let r: ContentMetadata = adopt_and_update(name)?;
+            let r: ContentMetadata = adopt_and_update(name, false)?;
             println!("Adopted and updated: {}: {}", name, r.version);
             updated = true;
         } else {
@@ -458,13 +467,13 @@ pub(crate) fn client_run_update() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn client_run_adopt_and_update() -> Result<()> {
+pub(crate) fn client_run_adopt_and_update(with_static_config: bool) -> Result<()> {
     let status: Status = status()?;
     if status.adoptable.is_empty() {
         println!("No components are adoptable.");
     } else {
         for (name, _) in status.adoptable.iter() {
-            let r: ContentMetadata = adopt_and_update(name)?;
+            let r: ContentMetadata = adopt_and_update(name, with_static_config)?;
             println!("Adopted and updated: {}: {}", name, r.version);
         }
     }

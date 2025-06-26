@@ -1,4 +1,6 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use camino::Utf8PathBuf;
+use openat_ext::OpenatDirExt;
 #[cfg(target_arch = "powerpc64")]
 use std::borrow::Cow;
 use std::io::prelude::*;
@@ -8,6 +10,7 @@ use std::process::Command;
 
 use crate::blockdev;
 use crate::component::*;
+use crate::grubconfigs;
 use crate::model::*;
 use crate::packagesystem;
 
@@ -156,7 +159,71 @@ impl Component for Bios {
         crate::component::query_adopt_state()
     }
 
-    fn adopt_update(&self, _: &openat::Dir, update: &ContentMetadata) -> Result<InstalledContent> {
+    // Backup the current grub.cfg and replace with new static config
+    // - Backup "/boot/loader/grub.cfg" to "/boot/grub2/grub.cfg.bak"
+    // - Remove symlink "/boot/grub2/grub.cfg"
+    // - Replace "/boot/grub2/grub.cfg" symlink with new static "grub.cfg"
+    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
+        let grub = "boot/grub2";
+        // sysroot_path is /, destdir is Dir of /
+        let grub_config_path = Utf8PathBuf::from(sysroot_path).join(grub);
+        let grub_config_dir = destdir.sub_dir(grub).context("Opening boot/grub2")?;
+
+        let grub_config = grub_config_path.join(grubconfigs::GRUBCONFIG);
+
+        if !grub_config.exists() {
+            anyhow::bail!("Could not find '{}'", grub_config);
+        }
+
+        let mut current_config;
+        // If /boot/grub2/grub.cfg is not symlink, we need to keep going
+        if !grub_config.is_symlink() {
+            println!("'{}' is not a symlink", grub_config);
+            current_config = grub_config.clone();
+        } else {
+            // If /boot/grub2/grub.cfg is symlink to /boot/loader/grub.cfg,
+            // backup it to /boot/grub2/grub.cfg.bak
+            // Get real file for symlink /boot/grub2/grub.cfg
+            let real_config = grub_config_dir.read_link(grubconfigs::GRUBCONFIG)?;
+            let real_config =
+                Utf8PathBuf::from_path_buf(real_config).expect("Path should be valid UTF-8");
+            // Resolve symlink location
+            current_config = grub_config_path.clone();
+            current_config.push(real_config);
+        }
+
+        let backup_config = grub_config_path.join(grubconfigs::GRUBCONFIG_BACKUP);
+        if !backup_config.exists() {
+            // Backup the current GRUB config which is hopefully working right now
+            println!(
+                "Creating a backup of the current GRUB config '{}' in '{}'...",
+                current_config, backup_config
+            );
+            std::fs::copy(&current_config, &backup_config)
+                .context("Failed to backup GRUB config")?;
+        }
+
+        crate::grubconfigs::install(&destdir, None, true)?;
+
+        // Remove the real config if it is symlink and will not
+        // if /boot/grub2/grub.cfg is file
+        if current_config != grub_config {
+            println!("Removing {}", current_config);
+            grub_config_dir.remove_file_optional(current_config.as_std_path())?;
+        }
+
+        // Synchronize the filesystem containing /boot/grub2 to disk.
+        let _ = grub_config_dir.syncfs();
+
+        Ok(())
+    }
+
+    fn adopt_update(
+        &self,
+        _: &openat::Dir,
+        update: &ContentMetadata,
+        with_static_config: bool,
+    ) -> Result<InstalledContent> {
         let Some(meta) = self.query_adopt()? else {
             anyhow::bail!("Failed to find adoptable system")
         };
@@ -165,6 +232,17 @@ impl Component for Bios {
         let device = blockdev::get_single_device(&target_root)?;
         self.run_grub_install(target_root, &device)?;
         log::debug!("Install grub modules on {device}");
+        if with_static_config {
+            // Install the static config if the OSTree bootloader is not set.
+            if let Some(bootloader) = crate::ostreeutil::get_ostree_bootloader()? {
+                println!(
+                    "ostree repo 'sysroot.bootloader' config option is currently set to: '{bootloader}'",
+                );
+            } else {
+                println!("ostree repo 'sysroot.bootloader' config option is not set yet");
+                self.migrate_static_grub_config(target_root, &openat::Dir::open(target_root)?)?;
+            };
+        }
         Ok(InstalledContent {
             meta: update.clone(),
             filetree: None,
