@@ -345,8 +345,11 @@ impl Component for Efi {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
         log::debug!("Found metadata {}", meta.version);
-        let srcdir_name = component_updatedirname(self);
-        let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
+        let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(EFILIB)?)?;
+
+        // Get EFI dirs from usr/lib/efi
+        let src_root_path = std::fs::read_link(format!("/proc/self/fd/{}", src_root.as_raw_fd()))?;
+        let src_efipath_iter = get_efi_path_from_usr(&src_root_path);
 
         // Let's attempt to use an already mounted ESP at the target
         // dest_root if one is already mounted there in a known ESP location.
@@ -369,12 +372,14 @@ impl Component for Efi {
 
         // TODO - add some sort of API that allows directly setting the working
         // directory to a file descriptor.
-        std::process::Command::new("cp")
-            .args(["-rp", "--reflink=auto"])
-            .arg(&srcdir_name)
-            .arg(destpath)
-            .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
-            .run()?;
+        for src in src_efipath_iter {
+            std::process::Command::new("cp")
+                .args(["-rp", "--reflink=auto"])
+                .arg(&src)
+                .arg(&destpath)
+                .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
+                .run()?;
+        }
         if update_firmware {
             if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
                 self.update_firmware(device, destd, &vendordir)?
@@ -552,9 +557,7 @@ impl Component for Efi {
     }
 
     fn get_efi_vendor(&self, sysroot: &openat::Dir) -> Result<Option<String>> {
-        let updated = sysroot
-            .sub_dir(&component_updatedirname(self))
-            .context("opening update dir")?;
+        let updated = sysroot.sub_dir(EFILIB).context("opening update dir")?;
         let shim_files = find_file_recursive(updated.recover_path()?, SHIM)?;
 
         // Does not support multiple shim for efi
@@ -702,7 +705,7 @@ fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<
 }
 
 /// Get EFI path under usr/lib/efi, eg. usr/lib/efi/<package>/<version>/EFI
-fn get_efi_path_from_usr<'a>(sysroot_path: &'a Path) -> impl Iterator<Item = PathBuf> + 'a{ 
+fn get_efi_path_from_usr<'a>(sysroot_path: &'a Path) -> impl Iterator<Item = PathBuf> + 'a {
     let efilib_path = sysroot_path.join(EFILIB);
 
     WalkDir::new(&efilib_path)
@@ -711,12 +714,7 @@ fn get_efi_path_from_usr<'a>(sysroot_path: &'a Path) -> impl Iterator<Item = Pat
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_dir() && e.file_name() == "EFI")
-        .filter_map(move |e| {
-            e.path()
-                .strip_prefix(sysroot_path)
-                .ok()
-                .map(PathBuf::from)
-        })
+        .filter_map(move |e| e.path().strip_prefix(sysroot_path).ok().map(PathBuf::from))
 }
 
 #[context("Get update metadata from {EFILIB}")]
