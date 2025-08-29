@@ -51,7 +51,7 @@ pub(crate) trait Component {
     /// This will be run during a disk image build process.
     fn install(
         &self,
-        src_root: &openat::Dir,
+        src_root: &str,
         dest_root: &str,
         device: &str,
         update_firmware: bool,
@@ -78,7 +78,7 @@ pub(crate) trait Component {
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult>;
 
     /// Locating efi vendor dir
-    fn get_efi_vendor(&self, sysroot: &openat::Dir) -> Result<Option<String>>;
+    fn get_efi_vendor(&self, sysroot: &str) -> Result<Option<String>>;
 }
 
 /// Given a component name, create an implementation.
@@ -201,7 +201,7 @@ mod tests {
         let td = tempfile::tempdir()?;
         let tdp = td.path();
         let tdp_updates = tdp.join("usr/lib/bootupd/updates");
-        let td = openat::Dir::open(tdp)?;
+        let td = &tdp_updates.to_string_lossy();
         std::fs::create_dir_all(tdp_updates.join("EFI/BOOT"))?;
         std::fs::create_dir_all(tdp_updates.join("EFI/fedora"))?;
         std::fs::create_dir_all(tdp_updates.join("EFI/centos"))?;
@@ -218,13 +218,13 @@ mod tests {
         let target_components: Vec<_> = all_components.values().collect();
         for &component in target_components.iter() {
             if component.name() == "BIOS" {
-                assert_eq!(component.get_efi_vendor(&td)?, None);
+                assert_eq!(component.get_efi_vendor(td)?, None);
             }
             if component.name() == "EFI" {
-                let x = component.get_efi_vendor(&td);
+                let x = component.get_efi_vendor(td);
                 assert_eq!(x.is_err(), true);
                 std::fs::remove_dir_all(tdp_updates.join("EFI/centos"))?;
-                assert_eq!(component.get_efi_vendor(&td)?, Some("fedora".to_string()));
+                assert_eq!(component.get_efi_vendor(td)?, Some("fedora".to_string()));
             }
         }
         Ok(())

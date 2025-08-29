@@ -108,12 +108,13 @@ impl Component for Bios {
 
     fn install(
         &self,
-        src_root: &openat::Dir,
+        src_root: &str,
         dest_root: &str,
         device: &str,
         _update_firmware: bool,
     ) -> Result<InstalledContent> {
-        let Some(meta) = get_component_update(src_root, self)? else {
+        let src_root = openat::Dir::open(src_root).context("Opening source root")?;
+        let Some(meta) = get_component_update(&src_root, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
 
@@ -265,7 +266,7 @@ impl Component for Bios {
         Ok(ValidationResult::Skip)
     }
 
-    fn get_efi_vendor(&self, _: &openat::Dir) -> Result<Option<String>> {
+    fn get_efi_vendor(&self, _: &str) -> Result<Option<String>> {
         Ok(None)
     }
 }

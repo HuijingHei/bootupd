@@ -257,7 +257,7 @@ impl Component for Efi {
     fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
         let sysroot =
             openat::Dir::open(sysroot_path).with_context(|| format!("Opening {sysroot_path}"))?;
-        let Some(vendor) = self.get_efi_vendor(&sysroot)? else {
+        let Some(vendor) = self.get_efi_vendor(sysroot_path)? else {
             anyhow::bail!("Failed to find efi vendor");
         };
 
@@ -338,17 +338,16 @@ impl Component for Efi {
 
     fn install(
         &self,
-        src_root: &openat::Dir,
+        src_root: &str,
         dest_root: &str,
         device: &str,
         update_firmware: bool,
     ) -> Result<InstalledContent> {
-        let Some(meta) = get_component_update(src_root, self)? else {
+        let src_root_dir = openat::Dir::open(src_root).context("Opening source root")?;
+        let Some(meta) = get_component_update(&src_root_dir, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
         log::debug!("Found metadata {}", meta.version);
-        let srcdir_name = component_updatedirname(self);
-        let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
 
         // Let's attempt to use an already mounted ESP at the target
         // dest_root if one is already mounted there in a known ESP location.
@@ -369,16 +368,45 @@ impl Component for Efi {
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp_fstype(destd)?;
 
-        // TODO - add some sort of API that allows directly setting the working
-        // directory to a file descriptor.
-        std::process::Command::new("cp")
-            .args(["-rp", "--reflink=auto"])
-            .arg(&srcdir_name)
-            .arg(destpath)
-            .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
-            .run()?;
+        let sysroot_path = Utf8Path::new(src_root);
+
+        let efilib_path = sysroot_path.join(EFILIB);
+        let efi_comps = if efilib_path.exists() {
+            get_efi_component_from_usr(&sysroot_path, EFILIB)?
+        } else {
+            None
+        };
+
+        let vendor_path;
+
+        // Copy files from usr/lib/efi if existing
+        let ft = if let Some(efi_components) = efi_comps {
+            vendor_path = efilib_path.to_string();
+            for efi in efi_components {
+                Command::new("cp")
+                    .args(["-rp", "--reflink=auto"])
+                    .arg(&efi.path)
+                    .arg(&destpath)
+                    .current_dir(format!("/proc/self/fd/{}", src_root_dir.as_raw_fd()))
+                    .run()?;
+            }
+            crate::filetree::FileTree::new_from_dir(&src_root_dir.sub_dir(EFILIB)?)?
+        } else {
+            let srcdir_name = component_updatedirname(self);
+            vendor_path = srcdir_name.to_string_lossy().into_owned();
+
+            // TODO - add some sort of API that allows directly setting the working
+            // directory to a file descriptor.
+            std::process::Command::new("cp")
+                .args(["-rp", "--reflink=auto"])
+                .arg(&srcdir_name)
+                .arg(&destpath)
+                .current_dir(format!("/proc/self/fd/{}", src_root_dir.as_raw_fd()))
+                .run()?;
+            crate::filetree::FileTree::new_from_dir(&src_root_dir.sub_dir(&srcdir_name)?)?
+        };
         if update_firmware {
-            if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
+            if let Some(vendordir) = self.get_efi_vendor(&vendor_path)? {
                 self.update_firmware(device, destd, &vendordir)?
             }
         }
@@ -545,11 +573,18 @@ impl Component for Efi {
         }
     }
 
-    fn get_efi_vendor(&self, sysroot: &openat::Dir) -> Result<Option<String>> {
-        let updated = sysroot
-            .sub_dir(&component_updatedirname(self))
-            .context("opening update dir")?;
-        let shim_files = find_file_recursive(updated.recover_path()?, SHIM)?;
+    fn get_efi_vendor(&self, sysroot: &str) -> Result<Option<String>> {
+        let target = Path::new(sysroot);
+        let efi_lib = target.join(EFILIB);
+        let updates = target.join(component_updatedirname(self).to_str().unwrap_or(""));
+        let target = if efi_lib.exists() {
+            &efi_lib
+        } else if updates.exists() {
+            &updates
+        } else {
+            target
+        };
+        let shim_files = find_file_recursive(target, SHIM)?;
 
         // Does not support multiple shim for efi
         if shim_files.len() > 1 {
