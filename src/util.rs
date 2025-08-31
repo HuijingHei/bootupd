@@ -3,7 +3,9 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use bootc_internal_utils::CommandRunExt;
 use openat_ext::OpenatDirExt;
+use rustix::fd::AsRawFd;
 
 /// Parse an environment variable as UTF-8
 #[allow(dead_code)]
@@ -119,4 +121,14 @@ impl Drop for SignalTerminationGuard {
     fn drop(&mut self) {
         signal_hook_registry::unregister(self.0);
     }
+}
+
+pub(crate) fn copy_in_fd<F: AsRawFd, P: AsRef<Path>>(fd: &F, src: &str, dest: P) -> Result<()> {
+    let cwd = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    Command::new("cp")
+        .args(["-rp", "--reflink=auto"])
+        .arg(src)
+        .arg(dest.as_ref())
+        .current_dir(cwd)
+        .run()
 }
