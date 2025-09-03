@@ -69,6 +69,27 @@ where
     rpm_parse_metadata(&rpmout.stdout)
 }
 
+/// Query the rpm database and get package <name>/<epoch>:<version>-<release>.
+pub(crate) fn query_file(sysroot_path: &str, path: &str) -> Result<String> {
+    let mut c = ostreeutil::rpm_cmd(sysroot_path)?;
+    c.args([
+        "-q",
+        "--queryformat",
+        "%{NAME}/%{EPOCH}:%{VERSION}-%{RELEASE}",
+        "-f",
+        path,
+    ]);
+
+    let rpmout = c.output()?;
+    if !rpmout.status.success() {
+        std::io::stderr().write_all(&rpmout.stderr)?;
+        bail!("Failed to invoke rpm -qf");
+    }
+
+    let output = String::from_utf8(rpmout.stdout)?;
+    Ok(output.trim().to_string())
+}
+
 fn parse_evr_map(input: &str) -> BTreeMap<String, Evr> {
     input
         .split(',')
