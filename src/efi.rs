@@ -18,7 +18,7 @@ use chrono::prelude::*;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
-use rustix::fd::BorrowedFd;
+use rustix::{fd::AsFd, fd::BorrowedFd, fs::StatVfsMountFlags};
 use walkdir::WalkDir;
 use widestring::U16CString;
 
@@ -46,6 +46,9 @@ pub(crate) const SHIM: &str = "shimx64.efi";
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) const SHIM: &str = "shimriscv64.efi";
+
+/// The mount path for uefi
+const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 
 /// Systemd boot loader info EFI variable names
 const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
@@ -152,6 +155,24 @@ impl Efi {
         // clear all the boot entries that match the target name
         clear_efi_target(&product_name)?;
         create_efi_boot_entry(device, espdir, vendordir, &product_name)
+    }
+
+    /// Return Ok(false) if efivars is empty or readonly.
+    /// Return Ok(true) if efivars is not empty and readwrite.
+    /// See https://github.com/coreos/bootupd/issues/972
+    #[context("Check if efivars is readwrite")]
+    fn is_efivars_rw(&self) -> Result<bool> {
+        if Path::new(EFIVARFS).try_exists()? && std::fs::read_dir(EFIVARFS)?.next().is_some() {
+            let efi = Dir::open_ambient_dir(EFIVARFS, cap_std::ambient_authority())
+                .context("Opening efivars")?;
+            let st = rustix::fs::fstatvfs(efi.as_fd())?;
+            if st.f_flag.contains(StatVfsMountFlags::RDONLY) {
+                println!("ReadOnly dir: {EFIVARFS}\nSkipped updating EFI firmware variables");
+                return Ok(false);
+            }
+            return Ok(true);
+        }
+        Ok(false)
     }
 }
 
@@ -381,7 +402,10 @@ impl Component for Efi {
             .run()?;
         if update_firmware {
             if let Some(vendordir) = self.get_efi_vendor(&Path::new(src_root))? {
-                self.update_firmware(device, destd, &vendordir)?
+                // Only update if EFI firmware variables is readwrite and not empty
+                if self.is_efivars_rw()? {
+                    self.update_firmware(device, destd, &vendordir)?;
+                }
             }
         }
         Ok(InstalledContent {
