@@ -163,8 +163,9 @@ impl Efi {
         }
 
         // Check shim exists and return earlier if not
-        if espdir.exists(format!("{vendordir}/{SHIM}"))? {
-            anyhow::bail!("Failed to find {SHIM}");
+        let shim_path = format!("EFI/{vendordir}/{SHIM}");
+        if !espdir.exists(&shim_path)? {
+            anyhow::bail!("Failed to find {shim_path}");
         }
         let loader = format!("\\EFI\\{vendordir}\\{SHIM}");
 
