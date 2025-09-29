@@ -55,6 +55,9 @@ const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 const STUB_INFO_VAR_STR: &str = "StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
+/// The options of cp command
+const OPTIONS: &[&str] = &["-rp", "--reflink=auto"];
+
 /// Return `true` if the system is booted via EFI
 pub(crate) fn is_efi_booted() -> Result<bool> {
     Path::new("/sys/firmware/efi")
@@ -319,10 +322,20 @@ impl Component for Efi {
             return Ok(None);
         };
 
+        let updated_path = {
+            let efilib_path = rootcxt.path.join(EFILIB);
+            if efilib_path.exists() && get_efi_component_from_usr(&rootcxt.path, EFILIB)?.is_some()
+            {
+                PathBuf::from(EFILIB)
+            } else {
+                component_updatedirname(self)
+            }
+        };
+
         let updated = rootcxt
             .sysroot
-            .sub_dir(&component_updatedirname(self))
-            .context("opening update dir")?;
+            .sub_dir(&updated_path)
+            .with_context(|| format!("opening update dir {}", updated_path.display()))?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
 
         let esp_devices = esp_devices.unwrap_or_default();
@@ -409,10 +422,9 @@ impl Component for Efi {
             )
         })?;
 
-        let ops = ["-rp", "--reflink=auto"];
         let efi_path = if let Some(efi_components) = efi_comps {
             for efi in efi_components {
-                filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, ops)?;
+                filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
             }
             EFILIB
         } else {
@@ -420,7 +432,7 @@ impl Component for Efi {
             let src = updates
                 .to_str()
                 .context("Include invalid UTF-8 characters in path")?;
-            filetree::copy_dir_with_args(&src_dir, src, dest, ops)?;
+            filetree::copy_dir_with_args(&src_dir, src, dest, OPTIONS)?;
             &src.to_owned()
         };
 
@@ -450,9 +462,22 @@ impl Component for Efi {
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
         let sysroot_dir = &rootcxt.sysroot;
         let updatemeta = self.query_update(sysroot_dir)?.expect("update available");
-        let updated = sysroot_dir
-            .sub_dir(&component_updatedirname(self))
-            .context("opening update dir")?;
+
+        let updated_path = {
+            let efilib_path = rootcxt.path.join(EFILIB);
+            if efilib_path.exists() && get_efi_component_from_usr(&rootcxt.path, EFILIB)?.is_some()
+            {
+                PathBuf::from(EFILIB)
+            } else {
+                component_updatedirname(self)
+            }
+        };
+
+        let updated = rootcxt
+            .sysroot
+            .sub_dir(&updated_path)
+            .with_context(|| format!("opening update dir {}", updated_path.display()))?;
+
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
 
