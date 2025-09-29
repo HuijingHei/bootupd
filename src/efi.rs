@@ -5,6 +5,7 @@
  */
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -580,6 +581,18 @@ impl Component for Efi {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
 
+        // Remove EFI prefix of the current filetree children path
+        // "shim/<ver>/EFI/fedora/shim.efi" -> "fedora/shim.efi"
+        let mut prune_children = BTreeMap::new();
+        for (pathstr, info) in currentf.children.iter() {
+            let path = Utf8Path::new(pathstr);
+            let prune_path = filetree::get_dest_efi_path(path).to_string();
+            prune_children.insert(prune_path, info.to_owned());
+        }
+        let curentf_prune = filetree::FileTree {
+            children: prune_children,
+        };
+
         let mut errs = Vec::new();
         let esp_devices = esp_devices.unwrap_or_default();
         for esp in esp_devices.iter() {
@@ -587,7 +600,7 @@ impl Component for Efi {
 
             let efidir = openat::Dir::open(&destpath.join("EFI"))
                 .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
-            let diff = currentf.relative_diff_to(&efidir)?;
+            let diff = curentf_prune.relative_diff_to(&efidir)?;
 
             for f in diff.changes.iter() {
                 errs.push(format!("Changed: {}", f));

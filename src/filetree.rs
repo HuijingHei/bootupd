@@ -406,7 +406,7 @@ fn get_first_dir(path: &Utf8Path) -> Result<(Utf8PathBuf, String)> {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-fn get_dest_efi_path(path: &Utf8Path) -> Utf8PathBuf {
+pub(crate) fn get_dest_efi_path(path: &Utf8Path) -> Utf8PathBuf {
     let parts: Vec<_> = path.iter().collect();
     if parts.get(2).map(|c| *c == "EFI").unwrap_or(false) {
         return parts.iter().skip(3).collect();
