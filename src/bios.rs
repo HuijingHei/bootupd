@@ -140,9 +140,9 @@ impl Component for Bios {
         Ok(Some(meta))
     }
 
-    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>> {
+    fn query_adopt(&self, _devices: &Option<Vec<String>>) -> Result<Option<Adoptable>> {
         #[cfg(target_arch = "x86_64")]
-        if crate::efi::is_efi_booted()? && devices.is_none() {
+        if crate::efi::is_efi_booted()? && _devices.is_none() {
             log::debug!("Skip BIOS adopt");
             return Ok(None);
         }

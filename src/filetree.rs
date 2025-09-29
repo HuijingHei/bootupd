@@ -4,6 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 use crate::freezethaw::fsfreeze_thaw_cycle;
 #[cfg(any(
     target_arch = "x86_64",
@@ -396,6 +401,11 @@ fn get_first_dir(path: &Utf8Path) -> Result<(Utf8PathBuf, String)> {
 }
 
 /// Get dest efi path "shim/<ver>/EFI/fedora/shim.efi" -> "fedora/shim.efi"
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 fn get_dest_efi_path(path: &Utf8Path) -> Utf8PathBuf {
     let parts: Vec<_> = path.iter().collect();
     if parts.get(2).map(|c| *c == "EFI").unwrap_or(false) {
