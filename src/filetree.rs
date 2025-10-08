@@ -71,6 +71,7 @@ use crate::sha512string::SHA512String;
 #[derive(Clone, Serialize, Deserialize, Debug, Hash, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct FileMetadata {
+    pub(crate) source: Option<String>,
     /// File size in bytes
     pub(crate) size: u64,
     /// Content checksum; chose SHA-512 because there are not a lot of files here
@@ -127,6 +128,7 @@ impl FileMetadata {
         let _ = std::io::copy(&mut r, &mut hasher)?;
         let digest = SHA512String::from_hasher(&mut hasher);
         Ok(FileMetadata {
+            source: None,
             size: meta.len(),
             sha512: digest,
         })
@@ -161,6 +163,7 @@ impl FileTree {
                         k.reserve(name.len() + 1);
                         k.insert(0, '/');
                         k.insert_str(0, name);
+                        println!("====get key={k}");
                         let _ = ret.insert(k, v);
                     }
                 }
@@ -183,8 +186,10 @@ impl FileTree {
     ))]
     pub(crate) fn new_from_dir(dir: &openat::Dir) -> Result<Self> {
         let mut children = BTreeMap::new();
-        for (k, v) in Self::unsorted_from_dir(dir)?.drain() {
-            children.insert(k, v);
+        for (k, mut v) in Self::unsorted_from_dir(dir)?.drain() {
+            let k_path = get_dest_efi_path(Utf8Path::new(&k)).to_string();
+            v.source = Some(k);
+            children.insert(k_path, v);
         }
 
         Ok(Self { children })
@@ -228,18 +233,18 @@ impl FileTree {
         for (k, v1) in self.children.iter() {
             if let Some(v2) = updated.children.get(k) {
                 if v1 != v2 {
-                    changes.insert(k.clone());
+                    changes.insert(v2.source.as_ref().unwrap_or(k).clone());
                 }
             } else {
                 removals.insert(k.clone());
             }
         }
         if check_additions {
-            for k in updated.children.keys() {
+            for (k, v) in updated.children.iter() {
                 if self.children.contains_key(k) {
                     continue;
                 }
-                additions.insert(k.clone());
+                additions.insert(v.source.as_ref().unwrap_or(k).clone());
             }
         }
         Ok(FileTreeDiff {
@@ -340,7 +345,26 @@ pub(crate) struct ApplyUpdateOptions {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
+pub(crate) fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
+    copy_dir_with_args(root, src, dst, ["-a"])
+}
+
+/// Copy from src to dst at root dir with args
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
+pub(crate) fn copy_dir_with_args<I, S>(
+    root: &openat::Dir,
+    src: &str,
+    dst: &str,
+    args: I,
+) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     use bootc_internal_utils::CommandRunExt;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
@@ -348,7 +372,7 @@ fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
     let rootfd = unsafe { BorrowedFd::borrow_raw(root.as_raw_fd()) };
     unsafe {
         Command::new("cp")
-            .args(["-a"])
+            .args(args)
             .arg(src)
             .arg(dst)
             .pre_exec(move || rustix::process::fchdir(rootfd).map_err(Into::into))
@@ -366,7 +390,7 @@ fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-fn get_first_dir(path: &Utf8Path) -> Result<(&Utf8Path, String)> {
+fn get_first_dir(path: &Utf8Path) -> Result<(Utf8PathBuf, String)> {
     let first = path
         .iter()
         .next()
@@ -374,6 +398,15 @@ fn get_first_dir(path: &Utf8Path) -> Result<(&Utf8Path, String)> {
     let mut tmp = first.to_owned();
     tmp.insert_str(0, TMP_PREFIX);
     Ok((first.into(), tmp))
+}
+
+/// Get dest efi path "shim/<ver>/EFI/fedora/shim.efi" -> "fedora/shim.efi"
+fn get_dest_efi_path(path: &Utf8Path) -> Utf8PathBuf {
+    let parts: Vec<_> = path.iter().collect();
+    if parts.get(2).map(|c| *c == "EFI").unwrap_or(false) {
+        return parts.iter().skip(3).collect();
+    }
+    path.to_path_buf()
 }
 
 /// Given two directories, apply a diff generated from srcdir to destdir
@@ -421,8 +454,9 @@ pub(crate) fn apply_diff(
     }
     // Write changed or new files to temp dir or temp file
     for pathstr in diff.changes.iter().chain(diff.additions.iter()) {
-        let path = Utf8Path::new(pathstr);
-        let (first_dir, first_dir_tmp) = get_first_dir(path)?;
+        let src_path = Utf8Path::new(pathstr);
+        let path = get_dest_efi_path(src_path);
+        let (first_dir, first_dir_tmp) = get_first_dir(&path)?;
         let mut path_tmp = Utf8PathBuf::from(&first_dir_tmp);
         if first_dir != path {
             if !destdir.exists(&first_dir_tmp)? && destdir.exists(first_dir.as_std_path())? {
@@ -443,7 +477,7 @@ pub(crate) fn apply_diff(
         }
         updates.insert(first_dir, first_dir_tmp);
         srcdir
-            .copy_file_at(path.as_std_path(), destdir, path_tmp.as_std_path())
+            .copy_file_at(src_path.as_std_path(), destdir, path_tmp.as_std_path())
             .with_context(|| format!("copying {:?} to {:?}", path, path_tmp))?;
     }
 
