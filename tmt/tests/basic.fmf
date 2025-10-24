@@ -1,0 +1,7 @@
+summary: Basic tests
+test: |
+    #!/bin/bash
+    set -eux
+    rpm -q bootupd
+    bootupctl status
+duration: 10m
