@@ -1,0 +1,25 @@
+# Build image for system-reinstall-bootc test
+
+# Use centos-bootc:stream10 as default
+FROM quay.io/fedora/fedora-coreos:testing-devel
+
+# # Save testing farm run files
+# COPY ARTIFACTS /var/ARTIFACTS
+# # Copy bootc repo
+# COPY test-artifacts /var/share/test-artifacts
+
+RUN <<EORUN
+set -xeuo pipefail
+# cp test-artifacts.repo /etc/yum.repos.d/
+# dnf -y update bootupd
+dnf install -y expect
+
+# Remove bootc repo, bootc updated already
+# rm -rf /var/share/test-artifacts /etc/yum.repos.d/test-artifacts.repo
+# Clean up dnf
+dnf -y clean all
+rm -rf /var/cache /var/lib/dnf
+
+# Finally, test our own linting
+# bootc container lint --fatal-warnings
+EORUN

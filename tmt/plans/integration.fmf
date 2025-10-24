@@ -1,0 +1,49 @@
+discover:
+    how: fmf
+execute:
+    how: tmt
+
+/integration:
+  summary: Integration test
+  provision:
+    - how: virtual
+      image: fedora-coreos
+      become: true
+  discover+:
+    test: /tmt/tests/basic
+
+/inte1:
+  summary: Integration test
+  provision:
+    - how: virtual
+      image: fedora-coreos
+      become: true
+  prepare:
+    - how: shell
+      script: |
+        cd $TMT_SOURCE_DIR
+        podman build -t test -f tmt/Containerfile.rpm
+        bootc switch --transport containers-storage localhost/test
+  discover+:
+    test: /tmt/tests/basic
+
+/bootc:
+  summary: Integration test using bootc
+  provision:
+    - how: bootc
+      container-file: tmt/Containerfile.rpm
+      become: true
+      disk: 20
+  discover+:
+    test: /tmt/tests/basic
+
+/failed:
+  summary: Integration test using bootc failed
+  provision:
+    - how: bootc
+      container-file: tmt/Containerfile.rpm
+      add-tmt-dependencies: false
+      become: true
+      disk: 20
+  discover+:
+    test: /tmt/tests/basic
