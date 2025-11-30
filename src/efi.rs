@@ -483,11 +483,30 @@ impl Component for Efi {
 
         for esp in esp_devices {
             let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
-            let destdir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
+            let dest_efi = destpath.join("EFI");
+            let destdir = openat::Dir::open(&dest_efi).context("opening EFI dir")?;
             validate_esp_fstype(&destdir)?;
+
+            // Get old vendor name from mounted efi before applying
+            let Some(old_vendor) = self.get_efi_vendor(&dest_efi)? else {
+                anyhow::bail!("Failed to find efi vendor at {}", dest_efi.display());
+            };
             log::trace!("applying diff: {}", &diff);
             filetree::apply_diff(&updated, &destdir, &diff, None)
                 .context("applying filesystem changes")?;
+
+            // Install grub.cfg under new vendor
+            {
+                // Get new vendor name
+                let sysroot = rootcxt.path.as_std_path();
+                let Some(new_vendor) = self.get_efi_vendor(&sysroot.join(&updated_path))? else {
+                    anyhow::bail!("Failed to find efi vendor in new update");
+                };
+                if new_vendor != old_vendor && destdir.exists(&old_vendor)? {
+                    grubconfigs::install(sysroot_dir, None, Some(&new_vendor), true)?;
+                    destdir.remove_all(&old_vendor)?;
+                }
+            }
 
             // Do the sync before unmount
             fsfreeze_thaw_cycle(destdir.open_file(".")?)?;
@@ -609,7 +628,7 @@ impl Component for Efi {
 
         // Does not support multiple shim for efi
         if shim_files.len() > 1 {
-            anyhow::bail!("Found multiple {SHIM} in the image");
+            anyhow::bail!("Found multiple {SHIM} in the image: {:?}", shim_files);
         }
         if let Some(p) = shim_files.first() {
             let p = p
